@@ -1,5 +1,4 @@
 # how
-___
 
 Personal scratchpad for commands I kept forgetting. Probably useful if you're the same.
 
