@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOW_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/how
+HOW_FILE=${HOW_FILE:-$HOW_DIR/entries}
+
+[[ -t 1 ]] && {
+    B=$'\033[1m' C=$'\033[36m' Y=$'\033[33m'
+    G=$'\033[32m' R=$'\033[31m' X=$'\033[0m'
+} || { B='' C='' Y='' G='' R='' X=''; }
+
+_init() {
+    mkdir -p "$HOW_DIR"
+    [[ -f "$HOW_FILE" ]] || touch "$HOW_FILE"
+}
+
+_die() { printf '%serror:%s %s\n' "$R" "$X" "$*" >&2; exit 1; }
+
+_search() {
+    local q; q=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    B_C="${B}${C}" RESET="$X" awk -v q="$q" '
+    BEGIN { bc=ENVIRON["B_C"]; rs=ENVIRON["RESET"] }
+    function strip(s,    n,a,i,out) {
+        n=split(s,a,"\n")
+        while (n>0 && a[n]=="") n--
+        out=""
+        for (i=1;i<=n;i++) { if (i>1) out=out "\n"; out=out a[i] }
+        return out
+    }
+    function emit(    s) {
+        if (name=="" || index(tolower(name),q)==0) return
+        if (found>0) print ""
+        print bc name rs
+        s=strip(body); if (s!="") print s
+        found++
+    }
+    name=="" && /^#/ { next }
+    /^---$/          { emit(); name=""; body=""; next }
+    name==""         { name=$0; next }
+                     { body=(body==""?"":body"\n") $0 }
+    END              { emit(); exit (found>0?0:1) }
+    ' "$HOW_FILE" || printf '%sno match:%s %s\n' "$Y" "$X" "$1" >&2
+}
+
+_list() {
+    awk '
+    name=="" && /^#/ { next }
+    /^---$/   { if (name!="") { print name; found++ } name=""; next }
+    name==""  { name=$0; next }
+    END       { if (name!="") { print name; found++ }; exit (found>0?0:1) }
+    ' "$HOW_FILE" | sort || printf '%sno entries%s\n' "$Y" "$X" >&2
+}
+
+_add() {
+    local name body=""
+    printf 'name: '; IFS= read -r name
+    [[ -z "$name" ]] && _die "name cannot be empty"
+    printf 'body (enter . on empty line to finish):\n'
+    while IFS= read -r line; do
+        [[ "$line" == '.' ]] && break
+        body+="${body:+$'\n'}$line"
+    done
+    [[ -z "$body" ]] && _die "body cannot be empty"
+    printf '%s\n%s\n---\n' "$name" "$body" >> "$HOW_FILE"
+    printf '%sadded:%s %s\n' "$G" "$X" "$name"
+}
+
+_edit() { "${EDITOR:-vi}" "$HOW_FILE"; }
+
+_delete() {
+    local target="$1"
+    awk -v t="$target" '
+    name=="" && /^#/ { next }
+    /^---$/ { if (name==t) { found=1; exit } name=""; next }
+    name=="" { name=$0; next }
+    END { if (!found && name==t) found=1; exit !found }
+    ' "$HOW_FILE" || _die "no match: $target"
+
+    printf '%sdelete:%s %s - confirm? [y/N] ' "$Y" "$X" "$target"
+    local c; IFS= read -r c
+    [[ "$(printf '%s' "$c" | tr '[:upper:]' '[:lower:]')" == 'y' ]] || {
+        echo 'aborted'; return 0
+    }
+
+    local tmp; tmp=$(mktemp) || _die "mktemp failed"
+    trap 'rm -f "$tmp"' RETURN
+    awk -v t="$target" '
+    function strip(s,    n,a,i,out) {
+        n=split(s,a,"\n")
+        while (n>0 && a[n]=="") n--
+        out=""
+        for (i=1;i<=n;i++) { if (i>1) out=out "\n"; out=out a[i] }
+        return out
+    }
+    function emit() {
+        if (name=="" || name==t) return
+        b=strip(body); print name; if (b!="") print b; print "---"
+    }
+    name=="" && /^#/ { print; next }
+    /^---$/   { emit(); name=""; body=""; next }
+    name==""  { name=$0; next }
+              { body=(body==""?"":body"\n") $0 }
+    END       { emit() }
+    ' "$HOW_FILE" > "$tmp" && mv "$tmp" "$HOW_FILE"
+    printf '%sdeleted:%s %s\n' "$G" "$X" "$target"
+}
+
+_help() { cat <<EOF
+usage:
+  how <query>       search entries (case-insensitive, partial)
+  how -l            list all entry names
+  how -a            add entry interactively
+  how -e            open \$HOW_FILE in \$EDITOR
+  how -d <name>     delete entry (exact name)
+  how -h            this help
+
+entries: $HOW_FILE
+env:     HOW_FILE=/custom/path how <query>
+
+format:
+  entry name
+  command or snippet
+  ---
+  # comment lines (outside entry bodies) are ignored
+EOF
+}
+
+_init
+
+case "${1:-}" in
+    -l|--list)    _list ;;
+    -a|--add)     _add ;;
+    -e|--edit)    _edit ;;
+    -d|--delete)  [[ -z "${2:-}" ]] && _die "-d requires a name"; _delete "$2" ;;
+    -h|--help|"") _help ;;
+    -*)           _die "unknown option: $1" ;;
+    *)            _search "$1" ;;
+esac
